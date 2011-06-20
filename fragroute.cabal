@@ -16,7 +16,7 @@ Synopsis:            Optimal Routes for Fragment Switches in the TTSoC
 -- Description:         
 
 -- URL for the project homepage or repository.
-Homepage:            http://luna.vmars.tuwien.ac.at/~benedikt/fragroute/
+-- Homepage:            http://luna.vmars.tuwien.ac.at/~benedikt/fragroute/
 
 -- The license under which the package is released.
 License:             BSD3
