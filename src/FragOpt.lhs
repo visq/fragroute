@@ -140,14 +140,14 @@ Results
 And the results? Here is the visualization of the 2*11 phase solution for establishing
 communication links between all cores in a 3 x 2 mesh:
 
-.. image:: images/mesh_11_0.png
-.. image:: images/mesh_11_1.png
-.. image:: images/mesh_11_2.png
-.. image:: images/mesh_11_3.png
-.. image:: images/mesh_11_4.png
-.. image:: images/mesh_11_5.png
-.. image:: images/mesh_11_6.png
-.. image:: images/mesh_11_7.png
-.. image:: images/mesh_11_8.png
-.. image:: images/mesh_11_9.png
-.. image:: images/mesh_11_10.png
+.. image:: images/mesh11-0.png
+.. image:: images/mesh11-1.png
+.. image:: images/mesh11-2.png
+.. image:: images/mesh11-3.png
+.. image:: images/mesh11-4.png
+.. image:: images/mesh11-5.png
+.. image:: images/mesh11-6.png
+.. image:: images/mesh11-7.png
+.. image:: images/mesh11-8.png
+.. image:: images/mesh11-9.png
+.. image:: images/mesh11-10.png

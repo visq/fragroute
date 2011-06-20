@@ -20,6 +20,14 @@ Import the definitions for fragment switches
 
 > import FragRoute
 
+The purpose of this module is to visualize fragment switch routes
+found e.g. using `FragOpt.lhs <FragOpt.html>`_. The will look like
+this:
+
+.. image:: images/mesh11-0.png
+
+Drawing Routes
+--------------
 We define how to draw a route between an input and an output port:
 
 > drawRoute :: (Show l) => (Dir,Dir) -> l -> Diagram Cairo R2
@@ -38,6 +46,9 @@ We define how to draw a route between an input and an output port:
 >         line = stroke . fromVertices . map (origin .+^) 
 >         circlePoint angle = (cos angle, sin angle)
 >         angleOfVector (x,y) = atan2 y x
+
+Drawing the Mesh
+----------------
 
 The routine for drawing a fragment switch mesh with attached cores:
 
@@ -58,12 +69,8 @@ The routine for drawing a fragment switch mesh with attached cores:
 >     vcatC  = centerY . vcat . map centerX
 >     gridC  = centerY . vcat . map hcatC
 
-> groupBy' :: (Eq b) => (a -> b) -> [a] -> [[a]]
-> groupBy' f = groupBy (\a b -> f a == f b)
-> sortAndGroup :: (Ord b) => (a -> b) -> [a] -> [[a]]
-> sortAndGroup f =  groupBy' f . sortBy (comparing f)
-
-Drawing one phase:
+Drawing the Mesh Configuration
+------------------------------
 
 > drawSolution :: (Int,Int) -> Int -> [ (PortVar, Integer) ] -> Diagram Cairo R2
 > drawSolution dim phase configuration = drawMesh cores switches
@@ -79,25 +86,42 @@ Drawing one phase:
 >             routeSpec [(pv1,l),(pv2,l2)] | l==l2 = Just ( (var_dir pv2, var_dir pv1) , pred l )
 >             routeSpec badSpec = error $ show badSpec ++ " in " ++ show switchSolution
 
-The executable reads a solution produced by `FragOpt.lhs <FragOpt.html>`_, and draws a diagram
-for the selected phase (if it exists).
+> groupBy' :: (Eq b) => (a -> b) -> [a] -> [[a]]
+> groupBy' f = groupBy (\a b -> f a == f b)
+
+> sortAndGroup :: (Ord b) => (a -> b) -> [a] -> [[a]]
+> sortAndGroup f =  groupBy' f . sortBy (comparing f)
+
+Executable
+----------
+
+The executable reads a solution produced by `FragOpt.lhs <FragOpt.html>`_, and draws .png diagrams
+for all phases.
 
 > main :: IO ()
 > main = do
+>
 >  args <- getArgs
->  inputFile <- case args of
->     [] -> error "Usage: fragdraw -o output.pdf --selection Phase_N input.dat"
->     xs -> return $ last xs
+>  (inputFile, resultPrefix, options) <- case args of
+>     args@(_:_:_) -> let (r:i:opts) = reverse args in return (i,r,reverse opts)
+>     _            -> error "Usage: fragdraw DIAGRAMS_OPTIONS input.dat resultfileprefix"
+>
 >  mSolution <- liftM read (readFile inputFile)
 >  solution <- case mSolution of
 >    Nothing -> error $ "No solution found for input file" ++ inputFile
 >    Just s  -> return s
+>
 >  let dim = let switches = map (var_switch . fst) (M.toList solution)
 >            in  (maximum (map fst switches) + 1, maximum (map snd switches) + 1)
 >  let solutionsByPhase =  map (filterConfiguration dim) . zip [0..] . groupBy' (var_phase . fst) . M.toList $ solution
+>
 >  putStrLn $ "Signals routed in total: " ++ ((show  . length . concat . map (routedSignals dim)) $ solutionsByPhase)
->  putStrLn $ "Rendering Diagram with dimension " ++ show dim
->  withArgs (init args) $ multiMain $ [ ("Phase_"++show i, drawSolution dim i sol) | (i,sol) <- solutionsByPhase ]
+>  putStrLn $ "Rendering Diagrams with dimension " ++ show dim
+>  
+>  forM_ solutionsByPhase $ \(i,sol) -> do
+>    withArgs ("-o" : (resultPrefix++"-"++show i++".png") : options) $ do
+>      defaultMain $ drawSolution dim i sol
+>
 >  where
 >     filterConfiguration dim solution@(phase,config) = (,) phase $
 >          [ portconfig | portconfig <- config, snd portconfig `elem` map fst (routedSignals dim solution) ]
@@ -107,6 +131,3 @@ for the selected phase (if it exists).
 >                                       , sourceId <- maybeToList (lookup (PortVar phase s False d) config)
 >                                       , sourceId /= 0 ]
 
-And what does it look like? Here is the visualization of one phase in a 3 x 2 mesh:
-
-.. image:: images/mesh_11_7.png
