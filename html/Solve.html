@@ -22,20 +22,23 @@
 &gt; import Yices.Easy.Types (Value(..))
 </code></pre>
 <p>There are quite a few SAT, SMT and LP packages available on hackage, but many of them have a monadic flavor. So I will again try to provide a clean abstraction layer suitable for complex SAT/LP formulations, sticking to the design decisions outlined below.</p>
-<p>Decision 1: We want a pure, simple interface, and believe that to this end, the performance overhead of deep embeddings is worth it.</p>
-<p>Decision 2: The most natural way to use variables in a pure expression language is to allow arbitrary haskell values to identify variables, and establish a mapping for use in the solver using the standard Map moodule.</p>
-<p>Decision 3: We want a dead-simple interface for simple optimization and SAT problems. The interface should look something like this:</p>
+<ul>
+<li><p>Decision 1: We want a pure, simple interface, and believe that to this end, the performance overhead of deep embeddings is worth it.</p></li>
+<li><p>Decision 2: The most natural way to use variables in a pure expression language is to allow arbitrary haskell values to identify variables, and establish a mapping for use in the solver using the standard Map moodule.</p></li>
+<li><p>Decision 3: We want a dead-simple interface for simple optimization and SAT problems. The interface should look something like this:</p></li>
+</ul>
 <pre class="sourceCode literate haskell"><code>&gt; --  solve     :: (Ord v) =&gt; [Assertion v] -&gt; Maybe (Map v Value)
 </code></pre>
 <hr />
+<h2 id="motivating-example">Motivating Example</h2>
 <p>Here is one example from the modeling problem which motivated this module:</p>
-<ol style="list-style-type: lower-alpha">
+<ul>
 <li>Informal Specification:</li>
-</ol>
+</ul>
 <p>We have two sets of integer variables: Input and Output ports for each switch, direction and phase.</p>
-<ol style="list-style-type: lower-alpha">
+<ul>
 <li>Formalization:</li>
-</ol>
+</ul>
 <pre class="sourceCode literate haskell"><code>&gt; {-
 &gt; type Phase = Int
 &gt; type Switch = (Int,Int)
@@ -46,18 +49,18 @@
 &gt; instance Variable SwitchVar
 &gt; -}
 </code></pre>
-<ol style="list-style-type: lower-alpha">
+<ul>
 <li>Informal Specification:</li>
-</ol>
+</ul>
 <p>For phase p, the following is true:</p>
 <pre class="sourceCode literate haskell"><code>&gt; {-
 &gt; Foreach switch s, direction d and direction d' /= d
 &gt;   out_p,s,d /= out_p,s,d' v out_p,s,d == 0 v out_p,s,d' == 0
 &gt; -}
 </code></pre>
-<ol start="2" style="list-style-type: lower-alpha">
+<ul>
 <li>Formalization:</li>
-</ol>
+</ul>
 <pre class="sourceCode literate haskell"><code>&gt; {-
 &gt; propertyOut :: Phase -&gt; [Assertion SwitchVar]
 &gt; propertyOut p =
@@ -70,6 +73,7 @@
 &gt; -}
 </code></pre>
 <hr />
+<h2 id="modeling-basics">Modeling Basics</h2>
 <pre class="sourceCode literate haskell"><code>&gt; type Assertion v = Expression v Bool
 </code></pre>
 <p>We try to avoid polymorphic data constructors as far as possible, as, in my opinion they complicate writing the backend a lot.</p>
@@ -119,7 +123,7 @@
 <pre class="sourceCode literate haskell"><code>&gt; fromIntValue :: Value -&gt; Integer
 &gt; fromIntValue v = case v of ValInt l -&gt; fromIntegral l ; _ -&gt; error ( &quot;fromIntValue: &quot; ++ show v )
 </code></pre>
-<p>Here starts the library:</p>
+<h2 id="modeling-language">Modeling Language</h2>
 <pre class="sourceCode literate haskell"><code>&gt; var :: (Variable v, ModelType t) =&gt; v -&gt; Expression v t
 &gt; var = Variable
 </code></pre>
@@ -161,6 +165,7 @@
 &gt; product' :: [Expression v Integer] -&gt; Expression v Integer
 &gt; product' = IntegerT . FoldI Product
 </code></pre>
+<h2 id="backend">Backend</h2>
 <p>And a backend using yices-easy</p>
 <pre class="sourceCode literate haskell"><code>&gt; data YicesBackend = YicesBackend
 &gt; instance Solver YicesBackend where
@@ -221,7 +226,7 @@
 &gt;     Sum     -&gt; Y.Arith Y.Add yes
 &gt;     Product -&gt; Y.Arith Y.Mul yes
 </code></pre>
-<p>And finally, simple examples</p>
+<h2 id="simple-examples">Simple Examples</h2>
 <pre class="sourceCode literate haskell"><code>&gt; instance Variable String
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; runDemo = solve YicesBackend 

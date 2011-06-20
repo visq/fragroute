@@ -19,27 +19,30 @@ have a monadic flavor. So I will again try to provide a clean abstraction layer
 suitable for complex SAT/LP formulations, sticking to the design decisions outlined
 below.
 
-Decision 1: We want a pure, simple interface, and believe that to this end, the performance
-overhead of deep embeddings is worth it.
+* Decision 1: We want a pure, simple interface, and believe that to this end, the performance
+  overhead of deep embeddings is worth it.
 
-Decision 2: The most natural way to use variables in a pure expression language is to allow
-arbitrary haskell values to identify variables, and establish a mapping for use in the solver
-using the standard Map moodule.
+* Decision 2: The most natural way to use variables in a pure expression language is to allow
+  arbitrary haskell values to identify variables, and establish a mapping for use in the solver
+  using the standard Map moodule.
 
-Decision 3: We want a dead-simple interface for simple optimization and SAT problems. The
-interface should look something like this:
+* Decision 3: We want a dead-simple interface for simple optimization and SAT problems. The
+  interface should look something like this:
 
 > --  solve     :: (Ord v) => [Assertion v] -> Maybe (Map v Value)
 
 ----
 
+Motivating Example
+------------------
+
 Here is one example from the modeling problem which motivated this module:
 
-(a) Informal Specification:
+* Informal Specification:
 
 We have two sets of integer variables: Input and Output ports for each switch, direction and phase.
 
-(a) Formalization:
+*  Formalization:
 
 > {-
 > type Phase = Int
@@ -51,7 +54,7 @@ We have two sets of integer variables: Input and Output ports for each switch, d
 > instance Variable SwitchVar
 > -}
 
-(a) Informal Specification:
+* Informal Specification:
 
 For phase p, the following is true:
 
@@ -60,7 +63,7 @@ For phase p, the following is true:
 >   out_p,s,d /= out_p,s,d' v out_p,s,d == 0 v out_p,s,d' == 0
 > -}
 
-(b) Formalization:
+* Formalization:
 
 > {-
 > propertyOut :: Phase -> [Assertion SwitchVar]
@@ -74,6 +77,9 @@ For phase p, the following is true:
 > -}
 
 ------------------------------------------------------------------------------------------------
+
+Modeling Basics
+---------------
 
 > type Assertion v = Expression v Bool
 
@@ -126,7 +132,8 @@ they complicate writing the backend a lot.
 > fromIntValue :: Value -> Integer
 > fromIntValue v = case v of ValInt l -> fromIntegral l ; _ -> error ( "fromIntValue: " ++ show v )
 
-Here starts the library:
+Modeling Language
+-----------------
 
 > var :: (Variable v, ModelType t) => v -> Expression v t
 > var = Variable
@@ -169,6 +176,9 @@ Here starts the library:
 > sum' = IntegerT . FoldI Sum
 > product' :: [Expression v Integer] -> Expression v Integer
 > product' = IntegerT . FoldI Product
+
+Backend
+-------
 
 And a backend using yices-easy
 
@@ -231,7 +241,8 @@ And a backend using yices-easy
 >     Sum     -> Y.Arith Y.Add yes
 >     Product -> Y.Arith Y.Mul yes
 
-And finally, simple examples
+Simple Examples
+---------------
 
 > instance Variable String
 
