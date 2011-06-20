@@ -1,0 +1,37 @@
+FragRoute: Computing and Visualizing Optimal Routes for the TTSoC
+=================================================================
+
+Installation
+------------
+First of all, you need a recent haskell toolchain, preferably
+
+ * `Haskell Platform <http://hackage.haskell.org/platform/>`_, version 2011.2.0.1 
+ 
+Although the project is cabalized, you need a few additional non-haskell components
+
+ * `The SMT solve yices <http://yices.csl.sri.com/>`_, version 1.0.28 (I use a variant with GMP dynamically linked)
+ * Development packages for GTK2
+ 
+For the solver, ``cabal install bindings-yices``, supplying the include and lib directories of the yices installation
+to cabal.
+
+For the drawing, you need the most recent diagrams package, which unfortunately is not yet released.
+First, ``cabal install gtk2hs-buildtools``. Then get the latest diagrams components from
+`http://code.google.com/p/diagrams/`_, and install them using ``cabal``.
+
+If you managed to do all of this, installation is as easy as saying ``cabal install`` :)
+
+Usage
+-----
+
+::
+    $ fragopt
+    fragopt: Usage: fragopt <number-of-phases>
+    $ fragopt 11 > solution-11.dat
+    $ fragdraw
+    fragdraw: Usage: fragdraw DIAGRAMS_OPTIONS input.dat resultfileprefix
+    $ fragdraw solution-11.dat mesh11-
+
+Documentation
+-------------
+Check out `the literate haskell files <html/index.html>`_.
