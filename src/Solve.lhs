@@ -131,8 +131,8 @@ Here starts the library:
 > var :: (Variable v, ModelType t) => v -> Expression v t
 > var = Variable
 
-> integer :: Integer -> Expression v Integer
-> integer = Constant
+> integer :: (Integral n) => n -> Expression v Integer
+> integer = Constant . fromIntegral
 
 > true :: Expression v Bool
 > true = Constant True

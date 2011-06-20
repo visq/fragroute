@@ -36,7 +36,7 @@ have inputs and outputs in all four directions.
 Here is a picture of a 3 x 2 mesh, with routes connecting a few of
 the cores: 
 
-.. image:: mesh.png
+.. image:: images/mesh.png
 
 A fragment switch assigns each input to one output. This mapping has
 to be bijective, i.e., no two inputs are allowed to map to the same
@@ -44,17 +44,24 @@ output. In our model, we also allow inputs to be inactive. In this
 case, the input is not used, and the output direction for this input
 is irrelevant.
 
+A switch is identified by its row and its column
+
+> type Switch   = (Int,Int)
+
 For simplicity, we model the configuration of one switch as a
 list of input/output direction pairs.
 
 > type SwitchConfig = [(Dir,Dir)]
-> type Switch   = (Int,Int)
 
 One configuration assigns connections to each fragment switch.
 
 > type MeshConfig = Array Switch SwitchConfig
 
-> dimensions :: MeshConfig -> (Int,Int)
+The dimension of a mesh is the number columns and rows.
+
+> type Dim = (Int,Int)
+
+> dimensions :: MeshConfig -> Dim
 > dimensions meshArray = (\(x,y) -> (x+1,y+1)) $ snd (bounds meshArray)
 
 > meshBounds :: (Int,Int) -> ((Int,Int),(Int,Int))
@@ -78,33 +85,53 @@ outputs is unique, and no route maps the input to itself.
 > validConfig :: MeshConfig -> Bool
 > validConfig mesh = all validSwitchConfig (elems mesh)
 
-Cores are connected to the NoC at all four sides; the following function produces a list
-of switches, and the side where the core is attached to the switch.
+Cores are connected to the NoC at all four sides.
 
 > type Core = (Switch,Dir)
 
-> attachedCores :: (Int,Int) -> [Core]
-> attachedCores (cols,rows) = coreList W [0] [0..rows-1] ++ coreList E [cols-1] [0..rows-1] ++
->                             coreList N [0..cols-1] [0] ++ coreList S [0..cols-1] [rows-1]
->  where
->    coreList attachedDir xs ys = [ ( (x,y), attachedDir ) | x <- xs, y <- ys ]
+Each core has a unique integer identifying it. Core 1 is attached at the west of the switch in the
+first row and column, the other cores get increasing numbers in clockwise order. We do not use
+the id 0, as it will denote an inactive port in the formal model.
 
-> toCoreId :: (Switch,Dir) -> Integer
-> toCoreId (s,dir)   = fromIntegral $ ( (if dir `elem` [N,S] then fst else snd) s * 4 + fromEnum dir + 1 )
+> numberOfCores :: Dim -> Int
+> numberOfCores (cols,rows) = 2 * cols + 2 * rows
 
-> fromCoreId :: Integer -> Maybe (Dir, Int)
-> fromCoreId n | n > 0     = let (ix,d) = divMod (fromIntegral n - 1) 4 in Just (toEnum d, ix)
->              | otherwise = Nothing
+> toCoreId :: Dim -> Core -> Integer
+> toCoreId (cols,rows) (s,dir) = fromIntegral $ succ $
+>   case dir of
+>     W -> snd s
+>     S -> fst s + rows
+>     E -> (rows - snd s - 1) + cols + rows
+>     N -> (cols - fst s - 1) + 2 * rows + cols
+
+> fromCoreId :: Dim -> Integer -> Maybe Core
+> fromCoreId dim 0 = Nothing
+> fromCoreId (cols,rows) n = select (fromIntegral n-1) [(W,rows),(S,cols),(E,rows),(N,cols)]
+>   where
+>     select offs [] = Nothing
+>     select offs ( (dir,count) : rest ) | offs < count = Just (core dir offs)
+>                                        | otherwise = select (offs-count) rest
+>     core W row = ( (0          , row      ), W )
+>     core S col = ( (col       , rows-1    ), S )
+>     core E row = ( (cols-1    , rows-row-1), E )
+>     core N col = ( (cols-col-1, 0         ), N )
+
+The following function produces a cores, or equivalently, switches paired
+with the direction where one core is attached to the switch
+of switches, and the side where the core is attached to the switch.
+
+> attachedCores :: Dim -> [Core]
+> attachedCores dim = map (fromJust . fromCoreId dim) [1 .. toInteger (numberOfCores dim) ]
 
 The neighbour of a switch for a given output direction is given by the following
 equations:
 
 > neighbour :: Switch -> Dir -> (Switch,Dir)
 > neighbour (x,y) dir = case dir of
->   N -> ( (x,y-1), S)
->   W -> ( (x-1,y), E)
->   S -> ( (x,y+1), N)
->   E -> ( (x+1,y), W)
+>   N -> ( (x,  y-1), S )
+>   W -> ( (x-1,y  ), E )
+>   S -> ( (x,  y+1), N )
+>   E -> ( (x+1,y  ), W )
 
 > meshNeighbour :: ((Int,Int),(Int,Int)) -> Switch -> Dir -> Maybe (Switch, Dir)
 > meshNeighbour bounds switch dir

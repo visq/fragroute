@@ -43,7 +43,7 @@ The routine for drawing a fragment switch mesh with attached cores:
 
 > type SwitchLayout label = [ ( (Dir,Dir), label ) ]
 > drawMesh :: (Show l) => [[l]] -> [[SwitchLayout l]] -> Diagram Cairo R2
-> drawMesh cores@[north,west,south,east] switches =
+> drawMesh [north, west, south, east] switches =
 >            hcatC (nodes north (strutX 1.6))
 >            ===
 >            (vcatC (nodes west (strutY 1.6)) ||| gridC mesh ||| vcatC (nodes east (strutY 1.6))) # centerX
@@ -68,14 +68,15 @@ Drawing one phase:
 > drawSolution :: (Int,Int) -> Int -> [ (PortVar, Integer) ] -> Diagram Cairo R2
 > drawSolution dim phase configuration = drawMesh cores switches
 >   where
->     cores@[north,west,south,east] = map (map toCoreId) . sortAndGroup snd $ attachedCores dim
+>     -- rck prefers cores to start with 0, thus we subtract 1 from IDs (pred)
+>     [west,south,east,north] = map (map (pred . toCoreId dim)) . groupBy' snd $ attachedCores dim
+>     cores = [reverse north, west, south, reverse east]
 >     grid = map (sortAndGroup (fst . var_switch . fst)) . sortAndGroup (snd . var_switch . fst) $ configuration
 >     switches = map (map switchConfig) grid
 >     switchConfig switchSolution = mapMaybe routeSpec . groupBy' snd . sortBy sortSpec $ switchSolution
 >       where sortSpec = comparing (\(pv,signal) -> (signal, var_input pv))
->             routeSpec ( (pv1,l) : _) | l == 0 = Nothing
->             routeSpec [(pv1,l),(pv2,l2)] | l==l2 = Just ( (var_dir pv2, var_dir pv1) , l )
->             routeSpec [(pvi,_)] | var_input pvi = Nothing
+>             routeSpec ( (pv1,l) : _)     | l == 0 = Nothing
+>             routeSpec [(pv1,l),(pv2,l2)] | l==l2 = Just ( (var_dir pv2, var_dir pv1) , pred l )
 >             routeSpec badSpec = error $ show badSpec ++ " in " ++ show switchSolution
 
 The executable reads a solution produced by `FragOpt.lhs <FragOpt.html>`_, and draws a diagram
@@ -102,10 +103,10 @@ for the selected phase (if it exists).
 >          [ portconfig | portconfig <- config, snd portconfig `elem` map fst (routedSignals dim solution) ]
 >     routedSignals :: (Int,Int) -> (Int,  [ (PortVar, Integer) ] ) -> [(Integer,Integer)]
 >     routedSignals dim (phase,config) =
->          [ (sourceId,toCoreId c) | c@(s,d) <- attachedCores dim
->                                  , sourceId <- maybeToList (lookup (PortVar phase s False d) config)
->                                  , sourceId /= 0 ]
+>          [ (sourceId, toCoreId dim c) | c@(s,d) <- attachedCores dim
+>                                       , sourceId <- maybeToList (lookup (PortVar phase s False d) config)
+>                                       , sourceId /= 0 ]
 
 And what does it look like? Here is the visualization of one phase in a 3 x 2 mesh:
 
-.. image:: mesh_11_7.png
+.. image:: images/mesh_11_7.png
