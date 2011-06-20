@@ -1,0 +1,129 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta name="generator" content="pandoc" />
+  <title>Modelling Fragment Switches in the TTSoC</title>
+  <link rel="stylesheet" href="http://www.haskell.org/cabal/release/cabal-latest/doc/users-guide/Cabal.css" type="text/css" />
+</head>
+<body>
+<h1 class="title">Modelling Fragment Switches in the TTSoC</h1>
+<pre class="sourceCode literate haskell"><code>&gt; module FragRoute where
+</code></pre>
+<h1 id="solving">Solving</h1>
+<p><a href="FragOpt.html">FragOpt.lhs</a></p>
+<p>Modelling Language: <a href="Solve.html">Solve.lhs</a></p>
+<h1 id="drawing">Drawing</h1>
+<p><a href="FragDraw.html">FragDraw.lhs</a></p>
+<h1 id="the-basics">The Basics</h1>
+<p>This is a literal haskell file. Just copy it into a file named <code>FragRoute.lhs</code>, and you are ready to use the code.</p>
+<p>As always, we start with some basic imports:</p>
+<pre class="sourceCode literate haskell"><code>&gt; import Data.Maybe
+&gt; import Data.List
+&gt; import Data.Array
+</code></pre>
+<p>The NOC of the TTSoC is a regular M x N mesh, with cores connected on all four sides. The mesh is composed of fragment switches, which have inputs and outputs in all four directions.</p>
+<pre class="sourceCode literate haskell"><code>&gt; data Dir = N | W | S | E deriving (Eq,Ord,Show,Read,Enum,Bounded)
+&gt; toRad :: Dir -&gt; Double
+&gt; toRad dir = pi / 2 * (fromIntegral (fromEnum dir)) + pi/2
+</code></pre>
+<p>Here is a picture of a 3 x 2 mesh, with routes connecting a few of the cores:</p>
+<img src="images/mesh.png" alt="image" />
+<p>A fragment switch assigns each input to one output. This mapping has to be bijective, i.e., no two inputs are allowed to map to the same output. In our model, we also allow inputs to be inactive. In this case, the input is not used, and the output direction for this input is irrelevant.</p>
+<p>A switch is identified by its row and its column</p>
+<pre class="sourceCode literate haskell"><code>&gt; type Switch   = (Int,Int)
+</code></pre>
+<p>For simplicity, we model the configuration of one switch as a list of input/output direction pairs.</p>
+<pre class="sourceCode literate haskell"><code>&gt; type SwitchConfig = [(Dir,Dir)]
+</code></pre>
+<p>One configuration assigns connections to each fragment switch.</p>
+<pre class="sourceCode literate haskell"><code>&gt; type MeshConfig = Array Switch SwitchConfig
+</code></pre>
+<p>The dimension of a mesh is the number columns and rows.</p>
+<pre class="sourceCode literate haskell"><code>&gt; type Dim = (Int,Int)
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; dimensions :: MeshConfig -&gt; Dim
+&gt; dimensions meshArray = (\(x,y) -&gt; (x+1,y+1)) $ snd (bounds meshArray)
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; meshBounds :: (Int,Int) -&gt; ((Int,Int),(Int,Int))
+&gt; meshBounds (cols,rows) = ((0,0),(cols-1,rows-1))
+</code></pre>
+<p>One of the simplest configurations for a NxM mesh just connects neighbours from east and west, and from north and south in each switch:</p>
+<pre class="sourceCode literate haskell"><code>&gt; gridConfig :: (Int,Int) -&gt; MeshConfig
+&gt; gridConfig dim = array (meshBounds dim)
+&gt;                  [ ( pos , [(N,S),(S,N),(W,E),(E,W)] ) | pos &lt;- range (meshBounds dim) ]
+</code></pre>
+<p>The configuration of a switch is valid if the list of inputs and outputs is unique, and no route maps the input to itself.</p>
+<pre class="sourceCode literate haskell"><code>&gt; validSwitchConfig :: [(Dir,Dir)] -&gt; Bool
+&gt; validSwitchConfig config = let (ins,outs) = unzip config
+&gt;                            in noneRepeated ins &amp;&amp; noneRepeated outs &amp;&amp; all (uncurry (/=)) config
+&gt;                            where noneRepeated xs = xs == nub xs
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; validConfig :: MeshConfig -&gt; Bool
+&gt; validConfig mesh = all validSwitchConfig (elems mesh)
+</code></pre>
+<p>Cores are connected to the NoC at all four sides.</p>
+<pre class="sourceCode literate haskell"><code>&gt; type Core = (Switch,Dir)
+</code></pre>
+<p>Each core has a unique integer identifying it. Core 1 is attached at the west of the switch in the first row and column, the other cores get increasing numbers in clockwise order. We do not use the id 0, as it will denote an inactive port in the formal model.</p>
+<pre class="sourceCode literate haskell"><code>&gt; numberOfCores :: Dim -&gt; Int
+&gt; numberOfCores (cols,rows) = 2 * cols + 2 * rows
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; toCoreId :: Dim -&gt; Core -&gt; Integer
+&gt; toCoreId (cols,rows) (s,dir) = fromIntegral $ succ $
+&gt;   case dir of
+&gt;     W -&gt; snd s
+&gt;     S -&gt; fst s + rows
+&gt;     E -&gt; (rows - snd s - 1) + cols + rows
+&gt;     N -&gt; (cols - fst s - 1) + 2 * rows + cols
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; fromCoreId :: Dim -&gt; Integer -&gt; Maybe Core
+&gt; fromCoreId dim 0 = Nothing
+&gt; fromCoreId (cols,rows) n = select (fromIntegral n-1) [(W,rows),(S,cols),(E,rows),(N,cols)]
+&gt;   where
+&gt;     select offs [] = Nothing
+&gt;     select offs ( (dir,count) : rest ) | offs &lt; count = Just (core dir offs)
+&gt;                                        | otherwise = select (offs-count) rest
+&gt;     core W row = ( (0          , row      ), W )
+&gt;     core S col = ( (col       , rows-1    ), S )
+&gt;     core E row = ( (cols-1    , rows-row-1), E )
+&gt;     core N col = ( (cols-col-1, 0         ), N )
+</code></pre>
+<p>The following function produces a cores, or equivalently, switches paired with the direction where one core is attached to the switch of switches, and the side where the core is attached to the switch.</p>
+<pre class="sourceCode literate haskell"><code>&gt; attachedCores :: Dim -&gt; [Core]
+&gt; attachedCores dim = map (fromJust . fromCoreId dim) [1 .. toInteger (numberOfCores dim) ]
+</code></pre>
+<p>The neighbour of a switch for a given output direction is given by the following equations:</p>
+<pre class="sourceCode literate haskell"><code>&gt; neighbour :: Switch -&gt; Dir -&gt; (Switch,Dir)
+&gt; neighbour (x,y) dir = case dir of
+&gt;   N -&gt; ( (x,  y-1), S )
+&gt;   W -&gt; ( (x-1,y  ), E )
+&gt;   S -&gt; ( (x,  y+1), N )
+&gt;   E -&gt; ( (x+1,y  ), W )
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; meshNeighbour :: ((Int,Int),(Int,Int)) -&gt; Switch -&gt; Dir -&gt; Maybe (Switch, Dir)
+&gt; meshNeighbour bounds switch dir
+&gt;   | inRange bounds switch' = Just next
+&gt;   | otherwise = Nothing
+&gt;   where next@(switch',_) = neighbour switch dir
+</code></pre>
+<p>To find all possible routes for a given, valid configuration of a mesh, we follow the routes starting from each core.</p>
+<pre class="sourceCode literate haskell"><code>&gt; routes :: MeshConfig -&gt; [ ( (Core,Core) , [Switch] ) ]
+&gt; routes mesh = mapMaybe startRoute (attachedCores (dimensions mesh))
+&gt;   where
+&gt;     startRoute core = buildRoute core [] core
+&gt;     buildRoute start route (switch,dir) =
+&gt;       case lookup dir (mesh ! switch) of
+&gt;         Nothing   -&gt; Nothing
+&gt;         Just outDir -&gt;
+&gt;           case meshNeighbour (bounds mesh) switch outDir of
+&gt;             Just next -&gt; buildRoute start (switch:route) next
+&gt;             Nothing   -&gt; Just $ ( (start,(switch,outDir)) , reverse (switch:route) )
+</code></pre>
+<p>To pragmatic goal of playing around with fragment switches is to an optimal set of routes for a fairly small (3x2) NoC actually in use in the TTSoC architecture. To this end, we will formulate an SAT/ILP problem. The input space will consist of integer variables of type PortVar; for the full solver implementation, continue with <a href="FragOpt.html">FragOpt.lhs</a>.</p>
+<pre class="sourceCode literate haskell"><code>&gt; data PortVar = PortVar { var_phase :: Int, var_switch :: Switch, var_input :: Bool, var_dir :: Dir }
+&gt;            deriving (Eq,Ord,Show,Read)
+</code></pre>
+<p>Finally, we also want to illustrate meshes and routes programatically, using the fabolous diagrams package. If you are interested in the drawing stuff, have a look at <a href="FragDraw.html">FragDraw.lhs</a>.</p>
+</body>
+</html>

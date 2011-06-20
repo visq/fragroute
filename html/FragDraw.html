@@ -1,0 +1,126 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta name="generator" content="pandoc" />
+  <title></title>
+  <link rel="stylesheet" href="http://www.haskell.org/cabal/release/cabal-latest/doc/users-guide/Cabal.css" type="text/css" />
+</head>
+<body>
+<pre class="sourceCode literate haskell"><code>&gt; {-# LANGUAGE NoMonomorphismRestriction #-}
+</code></pre>
+<h1 id="drawing-fragment-switch-routes-using-diagrams">Drawing Fragment Switch Routes using diagrams</h1>
+<pre class="sourceCode literate haskell"><code>&gt; module Main where
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; import Control.Monad
+&gt; import Data.List
+&gt; import Data.Maybe
+&gt; import qualified Data.Map as M
+&gt; import Data.Ord
+&gt; import System.Exit
+&gt; import System.Environment (getArgs, withArgs)
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; import Diagrams.Prelude
+&gt; import Diagrams.Backend.Cairo.CmdLine
+</code></pre>
+<p>Import the definitions for fragment switches</p>
+<pre class="sourceCode literate haskell"><code>&gt; import FragRoute
+</code></pre>
+<p>The purpose of this module is to visualize fragment switch routes found e.g. using <a href="FragOpt.html">FragOpt.lhs</a>. The will look like this:</p>
+<img src="images/mesh11-0.png" alt="image" />
+<h2 id="drawing-routes">Drawing Routes</h2>
+<p>We define how to draw a route between an input and an output port:</p>
+<pre class="sourceCode literate haskell"><code>&gt; drawRoute :: (Show l) =&gt; (Dir,Dir) -&gt; l -&gt; Diagram Cairo R2
+&gt; drawRoute (start,end) label =
+&gt;   eqTriangle # fc red # scale 0.1 # rotate (Rad (angleOfVector routeVec - pi/2)) # translate startPoint
+&gt;     `atop`
+&gt;   line [ startPoint .+^ (0.3 *^ startVec), startPoint, endPoint, endPoint .+^ (0.3 *^ endVec) ] # lw 0.02
+&gt;      `atop`
+&gt;   text (show label) # scale 0.25 # translate (circlePoint (toRad start + 2.5 * doffs) .+^ (0.15 *^ startVec))
+&gt;   where
+&gt;         (startPoint, startVec) = prefixAndCirclePoint (start,(+doffs))
+&gt;         (endPoint, endVec) = prefixAndCirclePoint (end,(\x-&gt;x-doffs))
+&gt;         routeVec = endVec ^-^ startVec
+&gt;         prefixAndCirclePoint (dir,offs) = (circlePoint (offs $ toRad dir), circlePoint (toRad dir))
+&gt;         doffs = pi/32
+&gt;         line = stroke . fromVertices . map (origin .+^) 
+&gt;         circlePoint angle = (cos angle, sin angle)
+&gt;         angleOfVector (x,y) = atan2 y x
+</code></pre>
+<h2 id="drawing-the-mesh">Drawing the Mesh</h2>
+<p>The routine for drawing a fragment switch mesh with attached cores:</p>
+<pre class="sourceCode literate haskell"><code>&gt; type SwitchLayout label = [ ( (Dir,Dir), label ) ]
+&gt; drawMesh :: (Show l) =&gt; [[l]] -&gt; [[SwitchLayout l]] -&gt; Diagram Cairo R2
+&gt; drawMesh [north, west, south, east] switches =
+&gt;            hcatC (nodes north (strutX 1.6))
+&gt;            ===
+&gt;            (vcatC (nodes west (strutY 1.6)) ||| gridC mesh ||| vcatC (nodes east (strutY 1.6))) # centerX
+&gt;            ===
+&gt;            hcatC (nodes south (strutX 1.6))
+&gt;   where
+&gt;     nodes names inter = intersperse inter $ map (\n -&gt; unitSquare `atop` text (show n)) names
+&gt;     mesh = map (map drawSwitch) switches
+&gt;     drawSwitch = withNodeBounds . foldr atop (circle 1.0) . map (uncurry drawRoute)
+&gt;     withNodeBounds = withBounds (circle 1.3 :: Diagram Cairo R2)
+&gt;     hcatC  = centerX . hcat . map centerY
+&gt;     vcatC  = centerY . vcat . map centerX
+&gt;     gridC  = centerY . vcat . map hcatC
+</code></pre>
+<h2 id="drawing-the-mesh-configuration">Drawing the Mesh Configuration</h2>
+<pre class="sourceCode literate haskell"><code>&gt; drawSolution :: (Int,Int) -&gt; Int -&gt; [ (PortVar, Integer) ] -&gt; Diagram Cairo R2
+&gt; drawSolution dim phase configuration = drawMesh cores switches
+&gt;   where
+&gt;     -- rck prefers cores to start with 0, thus we subtract 1 from IDs (pred)
+&gt;     [west,south,east,north] = map (map (pred . toCoreId dim)) . groupBy' snd $ attachedCores dim
+&gt;     cores = [reverse north, west, south, reverse east]
+&gt;     grid = map (sortAndGroup (fst . var_switch . fst)) . sortAndGroup (snd . var_switch . fst) $ configuration
+&gt;     switches = map (map switchConfig) grid
+&gt;     switchConfig switchSolution = mapMaybe routeSpec . groupBy' snd . sortBy sortSpec $ switchSolution
+&gt;       where sortSpec = comparing (\(pv,signal) -&gt; (signal, var_input pv))
+&gt;             routeSpec ( (pv1,l) : _)     | l == 0 = Nothing
+&gt;             routeSpec [(pv1,l),(pv2,l2)] | l==l2 = Just ( (var_dir pv2, var_dir pv1) , pred l )
+&gt;             routeSpec badSpec = error $ show badSpec ++ &quot; in &quot; ++ show switchSolution
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; groupBy' :: (Eq b) =&gt; (a -&gt; b) -&gt; [a] -&gt; [[a]]
+&gt; groupBy' f = groupBy (\a b -&gt; f a == f b)
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; sortAndGroup :: (Ord b) =&gt; (a -&gt; b) -&gt; [a] -&gt; [[a]]
+&gt; sortAndGroup f =  groupBy' f . sortBy (comparing f)
+</code></pre>
+<h2 id="executable">Executable</h2>
+<p>The executable reads a solution produced by <a href="FragOpt.html">FragOpt.lhs</a>, and draws a diagram for the selected phase (if it exists).</p>
+<pre class="sourceCode literate haskell"><code>&gt; main :: IO ()
+&gt; main = do
+&gt; 
+&gt;  args &lt;- getArgs
+&gt;  (inputFile, resultPrefix, options) &lt;- case args of
+&gt;     args@(_:_:_) -&gt; let (r:i:opts) = reverse args in return (i,r,reverse opts)
+&gt;     _            -&gt; error &quot;Usage: fragdraw DIAGRAMS_OPTIONS input.dat resultfileprefix&quot;
+&gt; 
+&gt;  mSolution &lt;- liftM read (readFile inputFile)
+&gt;  solution &lt;- case mSolution of
+&gt;    Nothing -&gt; error $ &quot;No solution found for input file&quot; ++ inputFile
+&gt;    Just s  -&gt; return s
+&gt; 
+&gt;  let dim = let switches = map (var_switch . fst) (M.toList solution)
+&gt;            in  (maximum (map fst switches) + 1, maximum (map snd switches) + 1)
+&gt;  let solutionsByPhase =  map (filterConfiguration dim) . zip [0..] . groupBy' (var_phase . fst) . M.toList $ solution
+&gt; 
+&gt;  putStrLn $ &quot;Signals routed in total: &quot; ++ ((show  . length . concat . map (routedSignals dim)) $ solutionsByPhase)
+&gt;  putStrLn $ &quot;Rendering Diagrams with dimension &quot; ++ show dim
+&gt;  
+&gt;  forM_ solutionsByPhase $ \(i,sol) -&gt; do
+&gt;    withArgs (&quot;-o&quot; : (resultPrefix++&quot;-&quot;++show i++&quot;.png&quot;) : options) $ do
+&gt;      defaultMain $ drawSolution dim i sol
+&gt; 
+&gt;  where
+&gt;     filterConfiguration dim solution@(phase,config) = (,) phase $
+&gt;          [ portconfig | portconfig &lt;- config, snd portconfig `elem` map fst (routedSignals dim solution) ]
+&gt;     routedSignals :: (Int,Int) -&gt; (Int,  [ (PortVar, Integer) ] ) -&gt; [(Integer,Integer)]
+&gt;     routedSignals dim (phase,config) =
+&gt;          [ (sourceId, toCoreId dim c) | c@(s,d) &lt;- attachedCores dim
+&gt;                                       , sourceId &lt;- maybeToList (lookup (PortVar phase s False d) config)
+&gt;                                       , sourceId /= 0 ]
+</code></pre>
+</body>
+</html>

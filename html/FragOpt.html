@@ -1,0 +1,125 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta name="generator" content="pandoc" />
+  <title></title>
+  <link rel="stylesheet" href="http://www.haskell.org/cabal/release/cabal-latest/doc/users-guide/Cabal.css" type="text/css" />
+</head>
+<body>
+<pre class="sourceCode literate haskell"><code>&gt; {-# LANGUAGE ScopedTypeVariables #-}
+</code></pre>
+<h1 id="optimal-routing-for-fragment-switch-nocs">Optimal Routing for fragment switch NoCs</h1>
+<pre class="sourceCode literate haskell"><code>&gt; module Main where
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; import Data.Char
+&gt; import Data.Ix
+&gt; import Data.Maybe
+&gt; import Data.List
+&gt; import qualified Data.Map as M
+&gt; import Control.Monad
+&gt; import System.Exit
+&gt; import System.Environment
+</code></pre>
+<p>We use the fragment switch definitions from <a href="FragRoute.html">FragRoute.lhs</a></p>
+<pre class="sourceCode literate haskell"><code>&gt; import FragRoute
+</code></pre>
+<p>And our own, simple but beautiful solver module <a href="Solve.html">Solve.lhs</a>, which currently built upon <a href="http://mainisusuallyafunction.blogspot.com/2010/09/yices-easy-simple-sat-smt-solving-for.html">yices-easy</a>.</p>
+<pre class="sourceCode literate haskell"><code>&gt; import Solve
+</code></pre>
+<p>This module provides the formulization of the routing problem for fragment switches. The encoding only uses one simple datatype: port variables are either 0 or equal to one of the core ids. For simplicity, we use the theory of integers for these variables, although a pure SAT encoding is also feasible.</p>
+<p>For each switch, we have four input and four output ports. Each port routes messages from exactly one source core S (an integer &gt; 0), or is inactive (source 0). The PortVar datatype defined in <a href="FragRoute.html">FragRoute.lhs</a> is used to identify variables.</p>
+<pre class="sourceCode literate haskell"><code>&gt; instance Variable PortVar
+</code></pre>
+<p>Signals correspond to the IDs of attached cores. We could optimize the encoding a little bit, but in its current version (using toCoreId and fromCoreId) it is both simple and flexible.</p>
+<h2 id="sat-model">SAT Model</h2>
+<p>Now to the constraint sets: First, the source of an input port has to be equal to the connected output port. If the input is connected to a core X, the source is equal to id(X).</p>
+<pre class="sourceCode literate haskell"><code>&gt; assertWires :: Int -&gt; Dim -&gt; [Assertion PortVar]
+&gt; assertWires phase dim = [ wired switch inport | switch &lt;- range (meshBounds dim), inport &lt;- [N .. E] ]
+&gt;   where
+&gt;     wired switch dir =
+&gt;       case meshNeighbour (meshBounds dim) switch dir of
+&gt;          Nothing             -&gt; v === integer (toCoreId dim (switch,dir))
+&gt;          Just (switch',dir') -&gt; v === var (PortVar phase switch' False dir')
+&gt;       where v = var (PortVar phase switch True dir) :: Expression PortVar Integer
+</code></pre>
+<p>The output of a core is either 0 (inactive), or equal to one of the other inputs.</p>
+<pre class="sourceCode literate haskell"><code>&gt; assertNoOutputSpoofing :: Int -&gt; Dim -&gt; [Assertion PortVar]
+&gt; assertNoOutputSpoofing phase dim = [ routed switch outport | switch &lt;- range (meshBounds dim), outport &lt;- [N .. E] ]
+&gt;  where
+&gt;    routed switch dir = any' $ (v === integer 0) : [ v === inport | inport &lt;- inputs ]
+&gt;      where v      = var (PortVar phase switch False dir)
+&gt;            inputs = map var [ PortVar phase switch True dir' | dir' &lt;- [ N .. E ], dir' /= dir ]
+</code></pre>
+<p>Moreover, no two active outputs map to the same input</p>
+<pre class="sourceCode literate haskell"><code>&gt; assertDistinctOutputs :: Int -&gt; Dim -&gt; [Assertion PortVar]
+&gt; assertDistinctOutputs phase dim = [ distinct switch o1 o2 | switch &lt;- range (meshBounds dim), o1 &lt;- [N .. E]
+&gt;                                                     , o2 &lt;- [N .. E], o1 /= o2 ]
+&gt;  where
+&gt;    distinct switch o1 o2 = v1 =/= v2 .||. v1 === integer 0 .||. v2 === integer 0
+&gt;      where [v1,v2] = map (\d -&gt; var (PortVar phase switch False d)) [o1,o2]
+</code></pre>
+<p>Also, no two inputs are the same (this is not absolutely necessary, but avoids useless cycles)</p>
+<pre class="sourceCode literate haskell"><code>&gt; assertDistinctInputs :: Int -&gt; Dim -&gt; [Assertion PortVar]
+&gt; assertDistinctInputs phase dim = [ distinct switch i1 i2 | switch &lt;- range (meshBounds dim), i1 &lt;- [N .. E]
+&gt;                                                          , i2 &lt;- [N .. E], i1 /= i2 ]
+&gt;  where
+&gt;    distinct switch i1 i2 = v1 =/= v2 .||. v1 === integer 0 .||. v2 === integer 0
+&gt;      where [v1,v2] = map (\d -&gt; var (PortVar phase switch True d)) [i1,i2]
+</code></pre>
+<p>There are no self loops.</p>
+<pre class="sourceCode literate haskell"><code>&gt; assertNoSelfLoops :: Int -&gt; Dim -&gt; [Assertion PortVar]
+&gt; assertNoSelfLoops phase dim = [ noSelfLoop port | port &lt;- attachedCores dim ]
+&gt;  where
+&gt;    noSelfLoop (switch,dir) = var (PortVar phase switch True dir) =/= (var (PortVar phase switch False dir) :: Expression PortVar Integer)
+</code></pre>
+<p>No Duplex: If the output to core Y is active , the input signal id(Y) is not used in any output port. It is sufficient to only consider those output ports connected to the fragment switch where Y is attached.</p>
+<pre class="sourceCode literate haskell"><code>&gt; assertNoDuplex :: Int -&gt; Dim -&gt; [Assertion PortVar]
+&gt; assertNoDuplex phase dim = [ noDuplex core dir' | core@(switch,dir) &lt;- attachedCores dim, dir' &lt;- [N .. E], dir' /= dir ]
+&gt;  where
+&gt;    noDuplex core@(switch,dir) dir' = var outport === integer 0 .||. var outport'  =/=  integer (toCoreId dim core)
+&gt;      where outport  = PortVar phase switch False dir
+&gt;            outport' = PortVar phase switch False dir'
+</code></pre>
+<h2 id="calculating-routes">Calculating Routes</h2>
+<p>The route connects core X and core Y if the output port connected to Y is assigned to X.</p>
+<pre class="sourceCode literate haskell"><code>&gt; assertRouted :: Dim -&gt; [Int] -&gt; (Switch, Dir) -&gt; (Switch, Dir) -&gt; Assertion PortVar
+&gt; assertRouted dim phaseOptions core1@(s1,d1) core2@(s2,d2) = any'
+&gt;   [ var (PortVar phase s2 False d2) === integer (toCoreId dim core1) | phase &lt;- phaseOptions ]
+</code></pre>
+<p>To find a set of K configurations which establish a set of connections C, we instantiate the above problem for K phases, and then assert that each connection is routed in at least one phase</p>
+<pre class="sourceCode literate haskell"><code>&gt; findRoutes :: Dim -&gt; Int -&gt; IO (Maybe (M.Map PortVar Integer))
+&gt; findRoutes dim numPhases = do
+&gt;   let cs = attachedCores dim
+&gt;   res &lt;- solve YicesBackend $ concat [ assertWires p dim ++ assertNoOutputSpoofing p dim ++
+&gt;                                        assertDistinctOutputs p dim ++ assertDistinctInputs p dim ++
+&gt;                                        assertNoSelfLoops p dim ++ assertNoDuplex p dim
+&gt;                                        | p &lt;- [0..numPhases-1] ] ++
+&gt;                                      [ assertRouted dim [0..numPhases-1] c1 c2 | c1 &lt;- cs, c2 &lt;- cs, toCoreId dim c1 &lt; toCoreId dim c2 ]
+&gt;   return $ fmap (M.map fromIntValue) res
+</code></pre>
+<h2 id="program">Program</h2>
+<p>The program <code>fragopt &lt;N&gt;</code> computes a valid route using N phases. The results of the solver (which can take a few minutes even for smaller problems) are best piped into a result file, and then visualized using <a href="FragDraw.html">FragDraw.lhs</a></p>
+<pre class="sourceCode literate haskell"><code>&gt; main :: IO ()
+&gt; main = do
+&gt;   args &lt;- getArgs
+&gt;   phases &lt;- case args of
+&gt;      [ph] | all isDigit ph -&gt; return (read ph)
+&gt;      bad                   -&gt; error &quot;Usage: fragopt &lt;number-of-phases&gt;&quot;
+&gt;   findRoutes (3,2) phases &gt;&gt;= print
+</code></pre>
+<h2 id="results">Results</h2>
+<p>And the results? Here is the visualization of the 2*11 phase solution for establishing communication links between all cores in a 3 x 2 mesh:</p>
+<img src="images/mesh11-0.png" alt="image" />
+<img src="images/mesh11-1.png" alt="image" />
+<img src="images/mesh11-2.png" alt="image" />
+<img src="images/mesh11-3.png" alt="image" />
+<img src="images/mesh11-4.png" alt="image" />
+<img src="images/mesh11-5.png" alt="image" />
+<img src="images/mesh11-6.png" alt="image" />
+<img src="images/mesh11-7.png" alt="image" />
+<img src="images/mesh11-8.png" alt="image" />
+<img src="images/mesh11-9.png" alt="image" />
+<img src="images/mesh11-10.png" alt="image" />
+</body>
+</html>
