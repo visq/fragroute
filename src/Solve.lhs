@@ -1,4 +1,4 @@
-> {-# LANGUAGE StandaloneDeriving, ScopedTypeVariables, GADTs, TypeFamilies, TypeSynonymInstances #-}
+> {-# LANGUAGE StandaloneDeriving, ScopedTypeVariables, GADTs, TypeFamilies, TypeSynonymInstances, FlexibleInstances #-}
 
 A Non-Monadic interface to SAT/SMT/LP solvers
 =============================================
@@ -6,33 +6,24 @@ A Non-Monadic interface to SAT/SMT/LP solvers
 > module Solve where
 
 > import Control.Monad.State
-> import Data.Functor.Identity
 > import qualified Data.Map as M
 
-> import qualified Yices.Easy as Y
-> import qualified Yices.Easy.Sugar as Y
-> import qualified Yices.Easy.Build as Y
-> import Yices.Easy.Types (Value(..))
-
 There are quite a few SAT, SMT and LP packages available on hackage, but many of them
-have a monadic flavor. So I will again try to provide a clean abstraction layer
+have a monadic flavor. In this module we try to provide a clean abstraction layer
 suitable for complex SAT/LP formulations, sticking to the design decisions outlined
 below.
 
-* Decision 1: We want a pure, simple interface, and believe that to this end, the performance
-  overhead of deep embeddings is worth it.
+* Decision 1: We want a *pure*, *non-monadic* and simple interface, and believe that to this end,
+  the performance overhead of deep embeddings is worth it.
 
-* Decision 2: The most natural way to use variables in a pure expression language is to allow
+* Decision 2: The most natural way to use variables in a non-monadic expression language is to allow
   arbitrary haskell values to identify variables, and establish a mapping for use in the solver
   using the standard Map moodule.
 
-* Decision 3: We want a dead-simple interface for simple optimization and SAT problems. The
-  interface should look something like this:
-
-> --  solve     :: (Ord v) => [Assertion v] -> Maybe (Map v Value)
-
-----
-
+* Decision 3: We want a simple interface for running simple optimization and SAT problems.
+  For example, solve should take a list of assertions with variable type v, and maybe
+  return a solution of type ``Map v Value``.
+  
 Motivating Example
 ------------------
 
@@ -40,15 +31,12 @@ Here is one example from the modeling problem which motivated this module:
 
 * Informal Specification:
 
-We have two sets of integer variables: Input and Output ports for each switch, direction and phase.
+The problem has the following integer variables: For each switch, direction and phase, there is an
+input and an output port.
 
 *  Formalization:
 
 > {-
-> type Phase = Int
-> type Switch = (Int,Int)
-> type Direction = Int
->
 > data SwitchVar =  In  Phase Switch Direction
 >                 | Out Phase Switch Direction deriving (Eq,Ord,Show,Read)
 > instance Variable SwitchVar
@@ -56,27 +44,23 @@ We have two sets of integer variables: Input and Output ports for each switch, d
 
 * Informal Specification:
 
-For phase p, the following is true:
-
-> {-
-> Foreach switch s, direction d and direction d' /= d
->   out_p,s,d /= out_p,s,d' v out_p,s,d == 0 v out_p,s,d' == 0
-> -}
+For each phase p, the following is true: Foreach switch ``s``, and each pair of distinct direction
+``(d,d')``, either the output ports map to different signals, or one of the output ports is
+inactive.
 
 * Formalization:
 
 > {-
 > propertyOut :: Phase -> [Assertion SwitchVar]
 > propertyOut p =
->   [ v =/= v' .||. v === integer 0 .||.  v' === integer 0
+>   [ v =/= v' .||. v === inactive .||.  v' === inactive
 >   | s <- switches
->   , d <- directions
->   , d' <- directions, d' /= d
->   , let (v,v') = map (var . Out p s) [ d, d' ] 
+>   , d <- directions,  let v = var (Out p s d)
+>   , d' <- directions, d' /= d, let v' = var (Out p s d')
 >   ]
+>   where inactive = integer 0
 > -}
 
-------------------------------------------------------------------------------------------------
 
 Modeling Basics
 ---------------
@@ -87,173 +71,190 @@ We try to avoid polymorphic data constructors as far as possible, as, in my opin
 they complicate writing the backend a lot.
 
 > data Expression v t where
->   Variable  :: (Variable v, ModelType t) => v -> Expression v t
->   Constant  :: (ModelType t) => t -> Expression v t
 >   Not       :: Expression v Bool -> Expression v Bool
 >   BoolT     :: BoolExpr v t -> Expression v t
 >   IntegerT  :: IntegerExpr v t -> Expression v t
-
+>   BitvectorT   :: BitvecExpr v t -> Expression v t
 > deriving instance Show (Expression v t)
 
 > data CmpOp = Eq | LtEq | Gt deriving (Eq,Ord,Show,Read)
 > data FoldOp = Sum | Product deriving (Eq,Ord,Show,Read)
 
 > data BoolExpr v t where
->   CmpB  :: CmpOp -> Expression v Bool -> Expression v Bool -> BoolExpr v Bool
->   FoldB :: FoldOp -> [Expression v Bool] -> BoolExpr v Bool
+>   VarB   :: (Variable v) => v -> BoolExpr v Bool
+>   ConstB :: Bool -> BoolExpr v Bool
+>   CmpB   :: CmpOp -> Expression v Bool -> Expression v Bool -> BoolExpr v Bool
+>   FoldB  :: FoldOp -> [Expression v Bool] -> BoolExpr v Bool
 
 > deriving instance Show (BoolExpr v t)
 
 > data IntegerExpr v t where
->   CmpI  :: CmpOp  -> Expression v Integer -> Expression v Integer -> IntegerExpr v Bool
->   FoldI :: FoldOp -> [Expression v Integer] -> IntegerExpr v Integer
+>   VarI   :: (Variable v) => v -> IntegerExpr v Integer
+>   ConstI :: Integer -> IntegerExpr v Integer
+>   CmpI   :: CmpOp  -> Expression v Integer -> Expression v Integer -> IntegerExpr v Bool
+>   FoldI  :: FoldOp -> [Expression v Integer] -> IntegerExpr v Integer
 
 > deriving instance Show (IntegerExpr v t)
 
-> data Type = TyInt | TyBool deriving (Eq,Ord,Show,Read)
-> class (Show v, Ord v) => Variable v
-> data Constant =  ConstInt Integer | ConstBool Bool
-> class (Show t) => ModelType t where
->   typeOf       :: t -> Type -- must not use first argument
->   toConstant   :: t -> Constant
->   fromConstant :: Constant -> Maybe t
-> instance ModelType Bool where
->   typeOf _ = TyBool
->   toConstant = ConstBool
->   fromConstant c = case c of ConstBool b -> Just b; _ -> Nothing
-> instance ModelType Integer where
->   typeOf _ = TyInt
->   toConstant = ConstInt
->   fromConstant c = case c of ConstInt i -> Just i; _ -> Nothing
+Data type for bitvectors
 
-> class Solver s where
->   solve :: (Variable v) => s -> [Assertion v] -> IO (Maybe (M.Map v Value))
+> data Bitvector = Bitvector Integer {- unsigned value -} Int {- bitwidth -} 
+>                  deriving (Eq, Ord, Show, Read)
+
+> bvToInteger :: Bool -> Bitvector -> Integer
+> bvToInteger False (Bitvector v _) = v
+
+> data BitvecExpr v t where
+>   VarBv   :: (Variable v) => Int -> v -> BitvecExpr v Bitvector
+>   ConstBv :: Bitvector -> BitvecExpr v Bitvector
+>   CmpBvU  :: CmpOp  -> Expression v Bitvector -> Expression v Bitvector -> BitvecExpr v Bool
+>   CmpBvS  :: CmpOp  -> Expression v Bitvector -> Expression v Bitvector -> BitvecExpr v Bool
+>   FoldBv  :: FoldOp -> [Expression v Bitvector] -> BitvecExpr v Bitvector
+
+> deriving instance Show (BitvecExpr v t)
+
+> class (Show v, Ord v) => Variable v
+
+Types and Constants
+-------------------
+
+> data Constant =  ConstInt Integer | ConstBool Bool | ConstBitvector Bitvector
+
+> data Type = TyInt | TyBool | TyBv Int deriving (Eq,Ord,Show,Read)
+
+> data Value =
+>     ValBool Bool
+>   | ValInt  Integer
+>   | ValBv   Bitvector
+>    deriving (Show,Read,Eq,Ord)
 
 > fromIntValue :: Value -> Integer
 > fromIntValue v = case v of ValInt l -> fromIntegral l ; _ -> error ( "fromIntValue: " ++ show v )
 
-Modeling Language
------------------
+> fromBvValue :: Value -> Bitvector
+> fromBvValue v = case v of ValBv bv  -> bv ; _ -> error ( "fromBvValue: " ++ show v )
 
-> var :: (Variable v, ModelType t) => v -> Expression v t
-> var = Variable
+Solver Interface
+----------------
 
-> integer :: (Integral n) => n -> Expression v Integer
-> integer = Constant . fromIntegral
+> class Solver s where
+>   solve :: (Variable v) => s -> [Assertion v] -> IO (Maybe (M.Map v Value))
 
-> true :: Expression v Bool
-> true = Constant True
 
-> false :: Expression v Bool
-> false = Constant False
+Language for Equality
+---------------------
 
 > class Eq' t where
 >   (===) :: Expression v t -> Expression v t -> Expression v Bool
 >   (=/=) :: Expression v t -> Expression v t -> Expression v Bool
 >   (=/=) e1 e2 = Not (e1 === e2)
 > infix 4 ===,=/=
-> instance Eq' Bool    where (===) b1 b2 = BoolT    (CmpB Eq b1 b2)
-> instance Eq' Integer where (===) i1 i2 = IntegerT (CmpI Eq i1 i2)
 
 > class Ord' t where
 >   (.>.) :: Expression v t -> Expression v t -> Expression v Bool
-> instance Ord' Integer where (.>.) i1 i2 = IntegerT (CmpI Gt i1 i2)
 
+Language for Booleans
+---------------------
+
+> boolVar :: (Variable v) => v -> Expression v Bool
+> boolVar = BoolT . VarB
+
+> instance Eq' Bool    where (===) b1 b2 = BoolT    (CmpB Eq b1 b2)
 
 > (.&&.) :: Expression v Bool -> Expression v Bool -> Expression v Bool
 > (.&&.) e1 e2 = all' [e1,e2]
 > infixr 1 .&&.
+
 > (.||.) :: Expression v Bool -> Expression v Bool -> Expression v Bool
 > (.||.) e1 e2 = any' [e1,e2]
 > infixr 2 .||.
 
 > any' :: [Expression v Bool] -> Expression v Bool
 > any' = BoolT . FoldB Sum
+
 > all' :: [Expression v Bool] -> Expression v Bool
 > all' = BoolT . FoldB Product
 
+> true :: Expression v Bool
+> true = BoolT $ ConstB True
+
+> false :: Expression v Bool
+> false = BoolT $ ConstB False
+
+Language for Numeric Types
+--------------------------
+
 > sum' :: [Expression v Integer] -> Expression v Integer
 > sum' = IntegerT . FoldI Sum
+
 > product' :: [Expression v Integer] -> Expression v Integer
 > product' = IntegerT . FoldI Product
 
-Backend
--------
+Language for Integral Types
+---------------------------
 
-And a backend using yices-easy
+> class (Eq' t) => Integral' t where
+>  integral ::  (Integral n) => n -> Expression v t
 
-> data YicesBackend = YicesBackend
-> instance Solver YicesBackend where
->  solve yices = solveYices yices
+Language for Unbounded Integers
+-------------------------------
 
-> solveYices :: (Ord v) => YicesBackend -> [Assertion v] -> IO (Maybe (M.Map v Value))
-> solveYices yices assertions = do
->   let (keymap, query) = Y.runBuild $ flip execStateT M.empty $ (mapM_ buildQuery assertions)
->   let rmap = (M.fromList . map (\(x,y) -> (y,x)) . M.toList) keymap
->   mmodel <- Y.solve query
->   return $ case mmodel of
->      Y.Sat model -> Just $ M.mapKeys (rmap M.!) model
->      _           -> Nothing
+> intVar :: (Variable v) => v -> Expression v Integer
+> intVar = IntegerT . VarI
 
-> buildQuery :: (Ord v) => Expression v Bool -> StateT (M.Map v String) (Y.BuildT Identity) ()
-> buildQuery e = buildExpression e >>= (lift . Y.assert)
+> instance Eq' Integer where (===) i1 i2 = IntegerT (CmpI Eq i1 i2)
+> instance Ord' Integer where (.>.) i1 i2 = IntegerT (CmpI Gt i1 i2)
+> instance Integral' Integer where integral = integer . fromIntegral
 
-> buildExpression :: (Ord v) => Expression v t -> StateT (M.Map v String) (Y.BuildT Identity) Y.Expr
-> buildExpression (Variable v :: Expression v t) = do
->   vmap <- get
->   case M.lookup v vmap of
->     Nothing -> do
->       ident <- lift (Y.freshName "v_")
->       modify (M.insert v ident)
->       case typeOf (undefined :: t) of
->         TyInt  -> lift$ Y.declInt ident
->         TyBool -> lift$ Y.declBool ident
->     Just ident -> return (Y.Var ident)
-> buildExpression (Constant t) = do
->   case toConstant t of
->     ConstInt i  -> return $ Y.LitNum (Y.FromString (show i))
->     ConstBool b -> return $ Y.LitBool b
-> buildExpression (Not e) = liftM (Y.Not) (buildExpression e)
-> buildExpression (BoolT be) = buildBooleanExpression be
-> buildExpression (IntegerT ie) = buildIntegerExpression ie
+> integer :: Integer -> Expression v Integer
+> integer = IntegerT . ConstI
 
-> buildBooleanExpression (CmpB cmp e1 e2) = do
->   [ye1,ye2] <- mapM buildExpression [e1,e2]
->   return $ case cmp of
->     Eq   -> Y.Compare Y.Eq ye1 ye2
->     LtEq -> Y.Compare Y.Le ye1 ye2
->     Gt   -> Y.Compare Y.Gt ye1 ye2
-> buildBooleanExpression (FoldB op es) = do
->   yes <- mapM buildExpression es
->   return $ case op of
->     Sum     -> Y.Logic Y.Or  yes
->     Product -> Y.Logic Y.And yes
+Language for Bounded Integers
+-----------------------------
 
-> buildIntegerExpression (CmpI cmp e1 e2) = do
->   [ye1,ye2] <- mapM buildExpression [e1,e2]
->   return $ case cmp of
->     Eq   -> Y.Compare Y.Eq ye1 ye2
->     LtEq -> Y.Compare Y.Le ye1 ye2
->     Gt   -> Y.Compare Y.Gt ye1 ye2
-> buildIntegerExpression (FoldI op es) = do
->   yes <- mapM buildExpression es
->   return $ case op of
->     Sum     -> Y.Arith Y.Add yes
->     Product -> Y.Arith Y.Mul yes
+> bvVar :: (Variable v) => Int -> v -> Expression v Bitvector
+> bvVar width = BitvectorT . VarBv width
 
-Simple Examples
----------------
+> instance Eq' Bitvector where (===) i1 i2  = BitvectorT (CmpBvU Eq i1 i2)
+> instance Ord' Bitvector where (.>.) i1 i2 = BitvectorT (CmpBvU Gt i1 i2)
+
+> bitvector :: Int -> Integer -> Expression v Bitvector
+> bitvector sz n | n < 0     = error "construction of negative bitvectors is not supported (error prone)"
+>                | otherwise = BitvectorT $ ConstBv $ Bitvector n sz
+
+Utilities
+---------
+
+Number of bits needed to represent an unsigned integer
+
+> bitWidthUnsigned :: Integer -> Int
+> bitWidthUnsigned n | n < 0     = error "bitWidthUnsigned: negative"
+>                    | otherwise = go n 1
+>  where go 0 l = l
+>        go 1 l = l
+>        go k l = go (k `div` 2) (l + 1)
+
+Backends
+--------
+
+See
+
+* `SolveYices.lhs <SolveYices.html>`_ for the yices-easy backend.
+
+
+Simple Example
+--------------
 
 > instance Variable String
 
-> runDemo = solve YicesBackend 
+> demo =
 >     [ true
 >     , true
->     , var "b1"
->     , Not (var "b2")
->     , var "x" =/= integer 0 
->     , var "y" =/= (var "z" :: Expression String Integer)
->     , sum' [ var "x" , var "z" ] === integer 42
->     , product' [var "x", integer 4 ] === integer 16
->     , var "b3" .||. var "b4" .||. var "b5"
->     ] >>= print
+>     , boolVar "b1"
+>     , Not (boolVar "b2")
+>     , intVar "x" =/= integer 0 
+>     , intVar "y" =/= (intVar "z" :: Expression String Integer)
+>     , sum' [ intVar "x" , intVar "z" ] === integer 42
+>     , product' [intVar "x", integer 4 ] === integer 16
+>     , boolVar "b3" .||. boolVar "b4" .||. boolVar "b5"
+>     ]

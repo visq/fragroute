@@ -7,43 +7,30 @@
   <link rel="stylesheet" href="http://www.haskell.org/cabal/release/cabal-latest/doc/users-guide/Cabal.css" type="text/css" />
 </head>
 <body>
-<pre class="sourceCode literate haskell"><code>&gt; {-# LANGUAGE StandaloneDeriving, ScopedTypeVariables, GADTs, TypeFamilies, TypeSynonymInstances #-}
+<pre class="sourceCode literate haskell"><code>&gt; {-# LANGUAGE StandaloneDeriving, ScopedTypeVariables, GADTs, TypeFamilies, TypeSynonymInstances, FlexibleInstances #-}
 </code></pre>
 <h1 id="a-non-monadic-interface-to-satsmtlp-solvers">A Non-Monadic interface to SAT/SMT/LP solvers</h1>
 <pre class="sourceCode literate haskell"><code>&gt; module Solve where
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; import Control.Monad.State
-&gt; import Data.Functor.Identity
 &gt; import qualified Data.Map as M
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; import qualified Yices.Easy as Y
-&gt; import qualified Yices.Easy.Sugar as Y
-&gt; import qualified Yices.Easy.Build as Y
-&gt; import Yices.Easy.Types (Value(..))
-</code></pre>
-<p>There are quite a few SAT, SMT and LP packages available on hackage, but many of them have a monadic flavor. So I will again try to provide a clean abstraction layer suitable for complex SAT/LP formulations, sticking to the design decisions outlined below.</p>
+<p>There are quite a few SAT, SMT and LP packages available on hackage, but many of them have a monadic flavor. In this module we try to provide a clean abstraction layer suitable for complex SAT/LP formulations, sticking to the design decisions outlined below.</p>
 <ul>
-<li><p>Decision 1: We want a pure, simple interface, and believe that to this end, the performance overhead of deep embeddings is worth it.</p></li>
-<li><p>Decision 2: The most natural way to use variables in a pure expression language is to allow arbitrary haskell values to identify variables, and establish a mapping for use in the solver using the standard Map moodule.</p></li>
-<li><p>Decision 3: We want a dead-simple interface for simple optimization and SAT problems. The interface should look something like this:</p></li>
+<li><p>Decision 1: We want a <em>pure</em>, <em>non-monadic</em> and simple interface, and believe that to this end, the performance overhead of deep embeddings is worth it.</p></li>
+<li><p>Decision 2: The most natural way to use variables in a non-monadic expression language is to allow arbitrary haskell values to identify variables, and establish a mapping for use in the solver using the standard Map moodule.</p></li>
+<li><p>Decision 3: We want a simple interface for running simple optimization and SAT problems. For example, solve should take a list of assertions with variable type v, and maybe return a solution of type <code>Map v Value</code>.</p></li>
 </ul>
-<pre class="sourceCode literate haskell"><code>&gt; --  solve     :: (Ord v) =&gt; [Assertion v] -&gt; Maybe (Map v Value)
-</code></pre>
-<hr />
 <h2 id="motivating-example">Motivating Example</h2>
 <p>Here is one example from the modeling problem which motivated this module:</p>
 <ul>
 <li>Informal Specification:</li>
 </ul>
-<p>We have two sets of integer variables: Input and Output ports for each switch, direction and phase.</p>
+<p>The problem has the following integer variables: For each switch, direction and phase, there is an input and an output port.</p>
 <ul>
 <li>Formalization:</li>
 </ul>
 <pre class="sourceCode literate haskell"><code>&gt; {-
-&gt; type Phase = Int
-&gt; type Switch = (Int,Int)
-&gt; type Direction = Int
-&gt; 
 &gt; data SwitchVar =  In  Phase Switch Direction
 &gt;                 | Out Phase Switch Direction deriving (Eq,Ord,Show,Read)
 &gt; instance Variable SwitchVar
@@ -52,194 +39,187 @@
 <ul>
 <li>Informal Specification:</li>
 </ul>
-<p>For phase p, the following is true:</p>
-<pre class="sourceCode literate haskell"><code>&gt; {-
-&gt; Foreach switch s, direction d and direction d' /= d
-&gt;   out_p,s,d /= out_p,s,d' v out_p,s,d == 0 v out_p,s,d' == 0
-&gt; -}
-</code></pre>
+<p>For each phase p, the following is true: Foreach switch <code>s</code>, and each pair of distinct direction <code>(d,d')</code>, either the output ports map to different signals, or one of the output ports is inactive.</p>
 <ul>
 <li>Formalization:</li>
 </ul>
 <pre class="sourceCode literate haskell"><code>&gt; {-
 &gt; propertyOut :: Phase -&gt; [Assertion SwitchVar]
 &gt; propertyOut p =
-&gt;   [ v =/= v' .||. v === integer 0 .||.  v' === integer 0
+&gt;   [ v =/= v' .||. v === inactive .||.  v' === inactive
 &gt;   | s &lt;- switches
-&gt;   , d &lt;- directions
-&gt;   , d' &lt;- directions, d' /= d
-&gt;   , let (v,v') = map (var . Out p s) [ d, d' ] 
+&gt;   , d &lt;- directions,  let v = var (Out p s d)
+&gt;   , d' &lt;- directions, d' /= d, let v' = var (Out p s d')
 &gt;   ]
+&gt;   where inactive = integer 0
 &gt; -}
 </code></pre>
-<hr />
 <h2 id="modeling-basics">Modeling Basics</h2>
 <pre class="sourceCode literate haskell"><code>&gt; type Assertion v = Expression v Bool
 </code></pre>
 <p>We try to avoid polymorphic data constructors as far as possible, as, in my opinion they complicate writing the backend a lot.</p>
 <pre class="sourceCode literate haskell"><code>&gt; data Expression v t where
-&gt;   Variable  :: (Variable v, ModelType t) =&gt; v -&gt; Expression v t
-&gt;   Constant  :: (ModelType t) =&gt; t -&gt; Expression v t
 &gt;   Not       :: Expression v Bool -&gt; Expression v Bool
 &gt;   BoolT     :: BoolExpr v t -&gt; Expression v t
 &gt;   IntegerT  :: IntegerExpr v t -&gt; Expression v t
-</code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; deriving instance Show (Expression v t)
+&gt;   BitvectorT   :: BitvecExpr v t -&gt; Expression v t
+&gt; deriving instance Show (Expression v t)
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; data CmpOp = Eq | LtEq | Gt deriving (Eq,Ord,Show,Read)
 &gt; data FoldOp = Sum | Product deriving (Eq,Ord,Show,Read)
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; data BoolExpr v t where
-&gt;   CmpB  :: CmpOp -&gt; Expression v Bool -&gt; Expression v Bool -&gt; BoolExpr v Bool
-&gt;   FoldB :: FoldOp -&gt; [Expression v Bool] -&gt; BoolExpr v Bool
+&gt;   VarB   :: (Variable v) =&gt; v -&gt; BoolExpr v Bool
+&gt;   ConstB :: Bool -&gt; BoolExpr v Bool
+&gt;   CmpB   :: CmpOp -&gt; Expression v Bool -&gt; Expression v Bool -&gt; BoolExpr v Bool
+&gt;   FoldB  :: FoldOp -&gt; [Expression v Bool] -&gt; BoolExpr v Bool
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; deriving instance Show (BoolExpr v t)
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; data IntegerExpr v t where
-&gt;   CmpI  :: CmpOp  -&gt; Expression v Integer -&gt; Expression v Integer -&gt; IntegerExpr v Bool
-&gt;   FoldI :: FoldOp -&gt; [Expression v Integer] -&gt; IntegerExpr v Integer
+&gt;   VarI   :: (Variable v) =&gt; v -&gt; IntegerExpr v Integer
+&gt;   ConstI :: Integer -&gt; IntegerExpr v Integer
+&gt;   CmpI   :: CmpOp  -&gt; Expression v Integer -&gt; Expression v Integer -&gt; IntegerExpr v Bool
+&gt;   FoldI  :: FoldOp -&gt; [Expression v Integer] -&gt; IntegerExpr v Integer
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; deriving instance Show (IntegerExpr v t)
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; data Type = TyInt | TyBool deriving (Eq,Ord,Show,Read)
-&gt; class (Show v, Ord v) =&gt; Variable v
-&gt; data Constant =  ConstInt Integer | ConstBool Bool
-&gt; class (Show t) =&gt; ModelType t where
-&gt;   typeOf       :: t -&gt; Type -- must not use first argument
-&gt;   toConstant   :: t -&gt; Constant
-&gt;   fromConstant :: Constant -&gt; Maybe t
-&gt; instance ModelType Bool where
-&gt;   typeOf _ = TyBool
-&gt;   toConstant = ConstBool
-&gt;   fromConstant c = case c of ConstBool b -&gt; Just b; _ -&gt; Nothing
-&gt; instance ModelType Integer where
-&gt;   typeOf _ = TyInt
-&gt;   toConstant = ConstInt
-&gt;   fromConstant c = case c of ConstInt i -&gt; Just i; _ -&gt; Nothing
+<p>Data type for bitvectors</p>
+<pre class="sourceCode literate haskell"><code>&gt; data Bitvector = Bitvector Integer {- unsigned value -} Int {- bitwidth -} 
+&gt;                  deriving (Eq, Ord, Show, Read)
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; class Solver s where
-&gt;   solve :: (Variable v) =&gt; s -&gt; [Assertion v] -&gt; IO (Maybe (M.Map v Value))
+<pre class="sourceCode literate haskell"><code>&gt; bvToInteger :: Bool -&gt; Bitvector -&gt; Integer
+&gt; bvToInteger False (Bitvector v _) = v
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; data BitvecExpr v t where
+&gt;   VarBv   :: (Variable v) =&gt; Int -&gt; v -&gt; BitvecExpr v Bitvector
+&gt;   ConstBv :: Bitvector -&gt; BitvecExpr v Bitvector
+&gt;   CmpBvU  :: CmpOp  -&gt; Expression v Bitvector -&gt; Expression v Bitvector -&gt; BitvecExpr v Bool
+&gt;   CmpBvS  :: CmpOp  -&gt; Expression v Bitvector -&gt; Expression v Bitvector -&gt; BitvecExpr v Bool
+&gt;   FoldBv  :: FoldOp -&gt; [Expression v Bitvector] -&gt; BitvecExpr v Bitvector
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; deriving instance Show (BitvecExpr v t)
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; class (Show v, Ord v) =&gt; Variable v
+</code></pre>
+<h2 id="types-and-constants">Types and Constants</h2>
+<pre class="sourceCode literate haskell"><code>&gt; data Constant =  ConstInt Integer | ConstBool Bool | ConstBitvector Bitvector
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; data Type = TyInt | TyBool | TyBv Int deriving (Eq,Ord,Show,Read)
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; data Value =
+&gt;     ValBool Bool
+&gt;   | ValInt  Integer
+&gt;   | ValBv   Bitvector
+&gt;    deriving (Show,Read,Eq,Ord)
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; fromIntValue :: Value -&gt; Integer
 &gt; fromIntValue v = case v of ValInt l -&gt; fromIntegral l ; _ -&gt; error ( &quot;fromIntValue: &quot; ++ show v )
 </code></pre>
-<h2 id="modeling-language">Modeling Language</h2>
-<pre class="sourceCode literate haskell"><code>&gt; var :: (Variable v, ModelType t) =&gt; v -&gt; Expression v t
-&gt; var = Variable
+<pre class="sourceCode literate haskell"><code>&gt; fromBvValue :: Value -&gt; Bitvector
+&gt; fromBvValue v = case v of ValBv bv  -&gt; bv ; _ -&gt; error ( &quot;fromBvValue: &quot; ++ show v )
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; integer :: (Integral n) =&gt; n -&gt; Expression v Integer
-&gt; integer = Constant . fromIntegral
+<h2 id="solver-interface">Solver Interface</h2>
+<pre class="sourceCode literate haskell"><code>&gt; class Solver s where
+&gt;   solve :: (Variable v) =&gt; s -&gt; [Assertion v] -&gt; IO (Maybe (M.Map v Value))
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; true :: Expression v Bool
-&gt; true = Constant True
-</code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; false :: Expression v Bool
-&gt; false = Constant False
-</code></pre>
+<h2 id="language-for-equality">Language for Equality</h2>
 <pre class="sourceCode literate haskell"><code>&gt; class Eq' t where
 &gt;   (===) :: Expression v t -&gt; Expression v t -&gt; Expression v Bool
 &gt;   (=/=) :: Expression v t -&gt; Expression v t -&gt; Expression v Bool
 &gt;   (=/=) e1 e2 = Not (e1 === e2)
 &gt; infix 4 ===,=/=
-&gt; instance Eq' Bool    where (===) b1 b2 = BoolT    (CmpB Eq b1 b2)
-&gt; instance Eq' Integer where (===) i1 i2 = IntegerT (CmpI Eq i1 i2)
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; class Ord' t where
 &gt;   (.&gt;.) :: Expression v t -&gt; Expression v t -&gt; Expression v Bool
-&gt; instance Ord' Integer where (.&gt;.) i1 i2 = IntegerT (CmpI Gt i1 i2)
+</code></pre>
+<h2 id="language-for-booleans">Language for Booleans</h2>
+<pre class="sourceCode literate haskell"><code>&gt; boolVar :: (Variable v) =&gt; v -&gt; Expression v Bool
+&gt; boolVar = BoolT . VarB
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; instance Eq' Bool    where (===) b1 b2 = BoolT    (CmpB Eq b1 b2)
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; (.&amp;&amp;.) :: Expression v Bool -&gt; Expression v Bool -&gt; Expression v Bool
 &gt; (.&amp;&amp;.) e1 e2 = all' [e1,e2]
 &gt; infixr 1 .&amp;&amp;.
-&gt; (.||.) :: Expression v Bool -&gt; Expression v Bool -&gt; Expression v Bool
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; (.||.) :: Expression v Bool -&gt; Expression v Bool -&gt; Expression v Bool
 &gt; (.||.) e1 e2 = any' [e1,e2]
 &gt; infixr 2 .||.
 </code></pre>
 <pre class="sourceCode literate haskell"><code>&gt; any' :: [Expression v Bool] -&gt; Expression v Bool
 &gt; any' = BoolT . FoldB Sum
-&gt; all' :: [Expression v Bool] -&gt; Expression v Bool
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; all' :: [Expression v Bool] -&gt; Expression v Bool
 &gt; all' = BoolT . FoldB Product
 </code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; true :: Expression v Bool
+&gt; true = BoolT $ ConstB True
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; false :: Expression v Bool
+&gt; false = BoolT $ ConstB False
+</code></pre>
+<h2 id="language-for-numeric-types">Language for Numeric Types</h2>
 <pre class="sourceCode literate haskell"><code>&gt; sum' :: [Expression v Integer] -&gt; Expression v Integer
 &gt; sum' = IntegerT . FoldI Sum
-&gt; product' :: [Expression v Integer] -&gt; Expression v Integer
+</code></pre>
+<pre class="sourceCode literate haskell"><code>&gt; product' :: [Expression v Integer] -&gt; Expression v Integer
 &gt; product' = IntegerT . FoldI Product
 </code></pre>
-<h2 id="backend">Backend</h2>
-<p>And a backend using yices-easy</p>
-<pre class="sourceCode literate haskell"><code>&gt; data YicesBackend = YicesBackend
-&gt; instance Solver YicesBackend where
-&gt;  solve yices = solveYices yices
+<h2 id="language-for-integral-types">Language for Integral Types</h2>
+<pre class="sourceCode literate haskell"><code>&gt; class (Eq' t) =&gt; Integral' t where
+&gt;  integral ::  (Integral n) =&gt; n -&gt; Expression v t
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; solveYices :: (Ord v) =&gt; YicesBackend -&gt; [Assertion v] -&gt; IO (Maybe (M.Map v Value))
-&gt; solveYices yices assertions = do
-&gt;   let (keymap, query) = Y.runBuild $ flip execStateT M.empty $ (mapM_ buildQuery assertions)
-&gt;   let rmap = (M.fromList . map (\(x,y) -&gt; (y,x)) . M.toList) keymap
-&gt;   mmodel &lt;- Y.solve query
-&gt;   return $ case mmodel of
-&gt;      Y.Sat model -&gt; Just $ M.mapKeys (rmap M.!) model
-&gt;      _           -&gt; Nothing
+<h2 id="language-for-unbounded-integers">Language for Unbounded Integers</h2>
+<pre class="sourceCode literate haskell"><code>&gt; intVar :: (Variable v) =&gt; v -&gt; Expression v Integer
+&gt; intVar = IntegerT . VarI
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; buildQuery :: (Ord v) =&gt; Expression v Bool -&gt; StateT (M.Map v String) (Y.BuildT Identity) ()
-&gt; buildQuery e = buildExpression e &gt;&gt;= (lift . Y.assert)
+<pre class="sourceCode literate haskell"><code>&gt; instance Eq' Integer where (===) i1 i2 = IntegerT (CmpI Eq i1 i2)
+&gt; instance Ord' Integer where (.&gt;.) i1 i2 = IntegerT (CmpI Gt i1 i2)
+&gt; instance Integral' Integer where integral = integer . fromIntegral
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; buildExpression :: (Ord v) =&gt; Expression v t -&gt; StateT (M.Map v String) (Y.BuildT Identity) Y.Expr
-&gt; buildExpression (Variable v :: Expression v t) = do
-&gt;   vmap &lt;- get
-&gt;   case M.lookup v vmap of
-&gt;     Nothing -&gt; do
-&gt;       ident &lt;- lift (Y.freshName &quot;v_&quot;)
-&gt;       modify (M.insert v ident)
-&gt;       case typeOf (undefined :: t) of
-&gt;         TyInt  -&gt; lift$ Y.declInt ident
-&gt;         TyBool -&gt; lift$ Y.declBool ident
-&gt;     Just ident -&gt; return (Y.Var ident)
-&gt; buildExpression (Constant t) = do
-&gt;   case toConstant t of
-&gt;     ConstInt i  -&gt; return $ Y.LitNum (Y.FromString (show i))
-&gt;     ConstBool b -&gt; return $ Y.LitBool b
-&gt; buildExpression (Not e) = liftM (Y.Not) (buildExpression e)
-&gt; buildExpression (BoolT be) = buildBooleanExpression be
-&gt; buildExpression (IntegerT ie) = buildIntegerExpression ie
+<pre class="sourceCode literate haskell"><code>&gt; integer :: Integer -&gt; Expression v Integer
+&gt; integer = IntegerT . ConstI
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; buildBooleanExpression (CmpB cmp e1 e2) = do
-&gt;   [ye1,ye2] &lt;- mapM buildExpression [e1,e2]
-&gt;   return $ case cmp of
-&gt;     Eq   -&gt; Y.Compare Y.Eq ye1 ye2
-&gt;     LtEq -&gt; Y.Compare Y.Le ye1 ye2
-&gt;     Gt   -&gt; Y.Compare Y.Gt ye1 ye2
-&gt; buildBooleanExpression (FoldB op es) = do
-&gt;   yes &lt;- mapM buildExpression es
-&gt;   return $ case op of
-&gt;     Sum     -&gt; Y.Logic Y.Or  yes
-&gt;     Product -&gt; Y.Logic Y.And yes
+<h2 id="language-for-bounded-integers">Language for Bounded Integers</h2>
+<pre class="sourceCode literate haskell"><code>&gt; bvVar :: (Variable v) =&gt; Int -&gt; v -&gt; Expression v Bitvector
+&gt; bvVar width = BitvectorT . VarBv width
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; buildIntegerExpression (CmpI cmp e1 e2) = do
-&gt;   [ye1,ye2] &lt;- mapM buildExpression [e1,e2]
-&gt;   return $ case cmp of
-&gt;     Eq   -&gt; Y.Compare Y.Eq ye1 ye2
-&gt;     LtEq -&gt; Y.Compare Y.Le ye1 ye2
-&gt;     Gt   -&gt; Y.Compare Y.Gt ye1 ye2
-&gt; buildIntegerExpression (FoldI op es) = do
-&gt;   yes &lt;- mapM buildExpression es
-&gt;   return $ case op of
-&gt;     Sum     -&gt; Y.Arith Y.Add yes
-&gt;     Product -&gt; Y.Arith Y.Mul yes
+<pre class="sourceCode literate haskell"><code>&gt; instance Eq' Bitvector where (===) i1 i2  = BitvectorT (CmpBvU Eq i1 i2)
+&gt; instance Ord' Bitvector where (.&gt;.) i1 i2 = BitvectorT (CmpBvU Gt i1 i2)
 </code></pre>
-<h2 id="simple-examples">Simple Examples</h2>
+<pre class="sourceCode literate haskell"><code>&gt; bitvector :: Int -&gt; Integer -&gt; Expression v Bitvector
+&gt; bitvector sz n | n &lt; 0     = error &quot;construction of negative bitvectors is not supported (error prone)&quot;
+&gt;                | otherwise = BitvectorT $ ConstBv $ Bitvector n sz
+</code></pre>
+<h2 id="utilities">Utilities</h2>
+<p>Number of bits needed to represent an unsigned integer</p>
+<pre class="sourceCode literate haskell"><code>&gt; bitWidthUnsigned :: Integer -&gt; Int
+&gt; bitWidthUnsigned n | n &lt; 0     = error &quot;bitWidthUnsigned: negative&quot;
+&gt;                    | otherwise = go n 1
+&gt;  where go 0 l = l
+&gt;        go 1 l = l
+&gt;        go k l = go (k `div` 2) (l + 1)
+</code></pre>
+<h2 id="backends">Backends</h2>
+<p>See</p>
+<ul>
+<li><a href="SolveYices.html">SolveYices.lhs</a> for the yices-easy backend.</li>
+</ul>
+<h2 id="simple-example">Simple Example</h2>
 <pre class="sourceCode literate haskell"><code>&gt; instance Variable String
 </code></pre>
-<pre class="sourceCode literate haskell"><code>&gt; runDemo = solve YicesBackend 
+<pre class="sourceCode literate haskell"><code>&gt; demo =
 &gt;     [ true
 &gt;     , true
-&gt;     , var &quot;b1&quot;
-&gt;     , Not (var &quot;b2&quot;)
-&gt;     , var &quot;x&quot; =/= integer 0 
-&gt;     , var &quot;y&quot; =/= (var &quot;z&quot; :: Expression String Integer)
-&gt;     , sum' [ var &quot;x&quot; , var &quot;z&quot; ] === integer 42
-&gt;     , product' [var &quot;x&quot;, integer 4 ] === integer 16
-&gt;     , var &quot;b3&quot; .||. var &quot;b4&quot; .||. var &quot;b5&quot;
-&gt;     ] &gt;&gt;= print
+&gt;     , boolVar &quot;b1&quot;
+&gt;     , Not (boolVar &quot;b2&quot;)
+&gt;     , intVar &quot;x&quot; =/= integer 0 
+&gt;     , intVar &quot;y&quot; =/= (intVar &quot;z&quot; :: Expression String Integer)
+&gt;     , sum' [ intVar &quot;x&quot; , intVar &quot;z&quot; ] === integer 42
+&gt;     , product' [intVar &quot;x&quot;, integer 4 ] === integer 16
+&gt;     , boolVar &quot;b3&quot; .||. boolVar &quot;b4&quot; .||. boolVar &quot;b5&quot;
+&gt;     ]
 </code></pre>
 </body>
 </html>

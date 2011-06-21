@@ -64,7 +64,8 @@ Executable fragopt
   -- Modules not exported by this package.
   Other-modules: FragRoute
                  Solve
-  
+                 SolveYices
+
   -- Directories other than the root containing source files.
   hs-source-dirs:      src
 
